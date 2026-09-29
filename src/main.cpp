@@ -8,58 +8,44 @@ Parametros P;
 enum Estado : uint8_t { DETENIDO, AVANZANDO, GIRANDO };
 Estado estado = DETENIDO;
 
-// ============================================================================
-// 2) ENCODERS - cuadratura completa, acceso directo a registros
-// ============================================================================
-// Con 4 encoders atendidos por interrupcion, leer el registro del puerto
-// directamente (1 instruccion) en vez de digitalRead() (~50 instrucciones)
-// importa de verdad para no perder pulsos.
-volatile long cuentas[NUM_MOTORES] = { 0, 0, 0, 0 };
-volatile uint8_t* regEncA[NUM_MOTORES];
-volatile uint8_t* regEncB[NUM_MOTORES];
-uint8_t mascaraEncA[NUM_MOTORES];
-uint8_t mascaraEncB[NUM_MOTORES];
-int8_t signoEnc[NUM_MOTORES];
+//Encoders
+volatile long cuentas[NUM_MOTORES] = { 0, 0, 0, 0 }; //Pulsos por encoder de motor
+int8_t signoEnc[NUM_MOTORES]; //Signos + - por motor
 
+// Cada que canal A cambia de estado se ejecuta - Direccion de giro
 static inline void flancoEncoder(uint8_t i) {
-  bool a = (*regEncA[i] & mascaraEncA[i]) != 0;
-  bool b = (*regEncB[i] & mascaraEncB[i]) != 0;
-  cuentas[i] += (a != b) ? signoEnc[i] : -signoEnc[i];
+  bool a = digitalRead(PIN_ENC_A[i]); //Leer canal A de encoder i
+  bool b = digitalRead(PIN_ENC_B[i]); //Leer canal B de encoder i
+  cuentas[i] += (a != b) ? signoEnc[i] : -signoEnc[i]; //Invertir a partir de signo y comparar encoders
 }
 void isrDI() { flancoEncoder(M_DI); }
 void isrTI() { flancoEncoder(M_TI); }
 void isrDD() { flancoEncoder(M_DD); }
 void isrTD() { flancoEncoder(M_TD); }
 
-// 'long' son 4 bytes en un chip de 8 bits: leerlo no es atomico.
-// Se copian los 4 contadores con interrupciones apagadas (dura ~2us).
+// Proporciona fuente confiable de cuanto han girado los motores
 void leerCuentas(long out[NUM_MOTORES]) {
   noInterrupts();
   for (uint8_t i = 0; i < NUM_MOTORES; i++) out[i] = cuentas[i];
   interrupts();
 }
 
+//Leer HIGH hasta que haya cambios
 void iniciarEncoders() {
   for (uint8_t i = 0; i < NUM_MOTORES; i++) {
     pinMode(PIN_ENC_A[i], INPUT_PULLUP);
     pinMode(PIN_ENC_B[i], INPUT_PULLUP);
-    regEncA[i] = portInputRegister(digitalPinToPort(PIN_ENC_A[i]));
-    regEncB[i] = portInputRegister(digitalPinToPort(PIN_ENC_B[i]));
-    mascaraEncA[i] = digitalPinToBitMask(PIN_ENC_A[i]);
-    mascaraEncB[i] = digitalPinToBitMask(PIN_ENC_B[i]);
     signoEnc[i] = ENCODER_INVERTIDO[i] ? -1 : 1;
   }
+
+  // Cada que canal A cambia de estado se ejecuta para ver posicion
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_A[M_DI]), isrDI, CHANGE);
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_A[M_TI]), isrTI, CHANGE);
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_A[M_DD]), isrDD, CHANGE);
   attachInterrupt(digitalPinToInterrupt(PIN_ENC_A[M_TD]), isrTD, CHANGE);
 }
 
-// ============================================================================
-// 3) MOTORES (L298N)
-// ============================================================================
-float pwmAplicado[NUM_MOTORES] = { 0, 0, 0, 0 };
-
+//Motores
 void iniciarMotores() {
   for (uint8_t i = 0; i < NUM_MOTORES; i++) {
     pinMode(PIN_INA[i], OUTPUT);
@@ -68,18 +54,20 @@ void iniciarMotores() {
   }
 }
 
-// u con signo: + = adelante, - = atras
+// u con signo + = adelante pero si tiene - = atras
 void motorAplicar(uint8_t i, float u) {
-  pwmAplicado[i] = u;
   if (MOTOR_INVERTIDO[i]) u = -u;
-  int pwm = constrain((int)(fabs(u) + 0.5f), 0, (int)P.maxPwm);
+  int pwm = constrain((int)(fabs(u) + 0.5f), 0, (int)P.maxPwm); //Quedarse dentro de un rango de pwm
   if (pwm == 0) {
+    //Giro sin resistencia
     digitalWrite(PIN_INA[i], LOW);
     digitalWrite(PIN_INB[i], LOW);
   } else if (u > 0) {
+    //Giro con sentido
     digitalWrite(PIN_INA[i], HIGH);
     digitalWrite(PIN_INB[i], LOW);
   } else {
+    //Giro con sentido contrario
     digitalWrite(PIN_INA[i], LOW);
     digitalWrite(PIN_INB[i], HIGH);
   }
@@ -88,17 +76,13 @@ void motorAplicar(uint8_t i, float u) {
 
 void frenarTodos() {
   for (uint8_t i = 0; i < NUM_MOTORES; i++) {
-    pwmAplicado[i] = 0;
     digitalWrite(PIN_INA[i], HIGH);
     digitalWrite(PIN_INB[i], HIGH);
-    analogWrite(PIN_EN[i], 255);   // freno activo
+    analogWrite(PIN_EN[i], 255);   // freno activo, corriente se opne a su mov
   }
 }
 
-// ============================================================================
-// 4) MPU6050 - solo el eje Z del giroscopio (yaw). Nada de acelerometro:
-//    la cascada nunca lo usa, asi que no se lee.
-// ============================================================================
+//MPU eje z -- REVISAR 
 float yaw = 0;         // grados, continuo
 float sesgoGz = 0;     // sesgo del giroscopio en cuentas crudas
 bool imuOk = false;
@@ -158,16 +142,14 @@ void actualizarIMU(float dt) {
   yaw += velGrados * dt;
 }
 
-// ============================================================================
-// 5) LAZOS DE CONTROL - la cascada de 3 niveles
-// ============================================================================
+//Lazos de control
 PID pidVel[NUM_MOTORES];
 PID pidRumbo;
 PID pidGiro;
 
-float velMedida[NUM_MOTORES]   = { 0, 0, 0, 0 };   // mm/s
-float velObjetivo[NUM_MOTORES] = { 0, 0, 0, 0 };   // mm/s
-long cuentasPrevias[NUM_MOTORES] = { 0, 0, 0, 0 };
+float velMedida[NUM_MOTORES]   = { 0, 0, 0, 0 };   // velocidad real por rueda en mm/s
+float velObjetivo[NUM_MOTORES] = { 0, 0, 0, 0 };   // target por rueda en mm/s
+long cuentasPrevias[NUM_MOTORES] = { 0, 0, 0, 0 }; //conteo del encoder de la lectura pasada
 
 float yawObjetivo = 0;
 float vBase = 0;
@@ -181,6 +163,7 @@ void aplicarParametros() {
   pidGiro.configurar(P.giroKp, 0.0f, P.giroKd, P.giroMax, 0.0f);
 }
 
+//Retroalimentacion aplicada a los 4 PID, cada 20ms
 void medirVelocidades(float dt) {
   long c[NUM_MOTORES];
   leerCuentas(c);
@@ -191,7 +174,6 @@ void medirVelocidades(float dt) {
   }
 }
 
-// NIVEL 1: PI + feedforward por motor
 void lazoVelocidad(float objIzq, float objDer, float dt) {
   velObjetivo[M_DI] = velObjetivo[M_TI] = objIzq;
   velObjetivo[M_DD] = velObjetivo[M_TD] = objDer;
@@ -205,6 +187,7 @@ void lazoVelocidad(float objIzq, float objDer, float dt) {
   }
 }
 
+// Cuánto ha avanzado el robot desde que empezó el movimiento actual promediando los 4 encoders
 float recorridoMM() {
   long c[NUM_MOTORES];
   leerCuentas(c);
@@ -219,7 +202,7 @@ void terminarMovimiento() {
   estado = DETENIDO;
 }
 
-// NIVEL 3 + NIVEL 2a: avanzar recto una distancia
+// Avanzar recto una distancia
 void pasoAvanzar(float dt) {
   float restante = distObjetivoMM - recorridoMM();
   if (fabs(restante) <= P.distTol || restante * distObjetivoMM < 0) {
@@ -238,8 +221,7 @@ void pasoAvanzar(float dt) {
   lazoVelocidad(vBase - dv, vBase + dv, dt);
 }
 
-// NIVEL 2b: girar en su lugar (usa el giroscopio, no los encoders, porque
-// las llantas derrapan al girar y los encoders mentirian sobre el angulo real)
+//Girar en su lugar
 void pasoGirar(float dt) {
   float error = yawObjetivo - yaw;
   if (fabs(error) <= P.giroTol) {
@@ -251,9 +233,7 @@ void pasoGirar(float dt) {
   lazoVelocidad(-dv, dv, dt);
 }
 
-// ============================================================================
-// 6) COMANDOS MINIMOS POR SERIAL - solo para disparar una prueba
-// ============================================================================
+//Comandos minimos por serial
 void iniciarAvance(float mm) {
   for (uint8_t i = 0; i < NUM_MOTORES; i++) pidVel[i].reiniciar();
   leerCuentas(cuentasInicio);
@@ -304,9 +284,6 @@ void leerSerial() {
   }
 }
 
-// ============================================================================
-// 7) DEBUG MINIMO - una linea de estado, nada de formato Teleplot
-// ============================================================================
 void imprimirDebug() {
   static uint32_t tUltimo = 0;
   if (millis() - tUltimo < 250) return;
@@ -321,9 +298,6 @@ void imprimirDebug() {
   Serial.println();
 }
 
-// ============================================================================
-// SETUP y LOOP
-// ============================================================================
 uint32_t tControl = 0;
 const uint32_t CONTROL_PERIODO_MS = 20;   // 50 Hz para toda la cascada
 
@@ -364,3 +338,4 @@ void loop() {
   leerSerial();
   imprimirDebug();
 }
+

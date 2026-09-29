@@ -9,7 +9,7 @@ class PID {
       this->intMax = intMax;
     }
 
-    // feedforward opcional, para sumar un valor fijo a la salida del PID.
+    // feedforward, para sumar un valor fijo a la salida del PID.
     float calcular(float setpoint, float medido, float dt, float ff = 0.0f) {
       float error = setpoint - medido;
 
