@@ -12,7 +12,7 @@ Estado estado = DETENIDO;
 volatile long cuentas[NUM_MOTORES] = { 0, 0, 0, 0 }; //Pulsos por encoder de motor
 int8_t signoEnc[NUM_MOTORES]; //Signos + - por motor
 
-// Cada que canal A cambia de estado se ejecuta - Direccion de giro
+// Cada que canal A cambia de estado se ejecuta 
 static inline void flancoEncoder(uint8_t i) {
   bool a = digitalRead(PIN_ENC_A[i]); //Leer canal A de encoder i
   bool b = digitalRead(PIN_ENC_B[i]); //Leer canal B de encoder i
@@ -143,6 +143,7 @@ void actualizarIMU(float dt) {
 }
 
 //Lazos de control
+//Crear objetos PID
 PID pidVel[NUM_MOTORES];
 PID pidRumbo;
 PID pidGiro;

@@ -14,8 +14,8 @@ const uint8_t PIN_ENC_A[NUM_MOTORES] = {  2,  3, 18, 19 }; //Cable Amarillo Señ
 const uint8_t PIN_ENC_B[NUM_MOTORES] = { 30, 31, 32, 33 }; //Cable Negro Señal B del Encoder
 
 //Para no recablear, cambiar valor aqui de signo si algo gira mal
-const bool MOTOR_INVERTIDO[NUM_MOTORES]   = { false, false, false, false };
-const bool ENCODER_INVERTIDO[NUM_MOTORES] = { false, false, false, false };
+const bool MOTOR_INVERTIDO[NUM_MOTORES]   = { false, false, true, true };
+const bool ENCODER_INVERTIDO[NUM_MOTORES] = { false, false, true, true };
 
 // Gira una rueda 10 vueltas completas a mano, cuenta los pulsos reales
 // que reporta el encoder, y divide entre 10 para obtener este valor.
