@@ -9,30 +9,35 @@ class PID {
       this->intMax = intMax;
     }
 
-    // feedforward, para sumar un valor fijo a la salida del PID.
+        // salida = ff + Kp*error + I + D
     float calcular(float setpoint, float medido, float dt, float ff = 0.0f) {
+      if (dt <= 0.0f) return constrain(ff, -salidaMax, salidaMax);
       float error = setpoint - medido;
 
-      integral += error * dt;
-      integral = constrain(integral, -intMax, intMax);
+      float derivada = primera ? 0.0f : -(medido - medidoPrevio) / dt;
+      medidoPrevio = medido;
+      primera = false;
 
-      float derivada = (dt > 0.0f) ? (error - errorPrevio) / dt : 0.0f;
-      errorPrevio = error;
+      float integralNueva = constrain(integral + Ki * error * dt, -intMax, intMax);
+      float prueba = ff + Kp * error + integralNueva + Kd * derivada;
+      bool saturaArriba = (prueba >  salidaMax) && (error > 0);
+      bool saturaAbajo  = (prueba < -salidaMax) && (error < 0);
+      if (!saturaArriba && !saturaAbajo) integral = integralNueva;
 
-      float salida = Kp * error + Ki * integral + Kd * derivada + ff;
+      float salida = ff + Kp * error + integral + Kd * derivada;
       return constrain(salida, -salidaMax, salidaMax);
     }
 
-    // Llamar SIEMPRE al iniciar un movimiento nuevo, o la integral y la
-    // derivada arrastran datos del movimiento anterior.
+    // Llamar SIEMPRE al iniciar un movimiento nuevo
     void reiniciar() {
       integral = 0;
-      errorPrevio = 0;
+      primera = true;
     }
 
   private:
     float Kp = 0, Ki = 0, Kd = 0;
     float salidaMax = 255, intMax = 255;
-    float integral = 0;
-    float errorPrevio = 0;
+    float integral = 0;      // ya multiplicada por Ki
+    float medidoPrevio = 0;
+    bool primera = true;
 };

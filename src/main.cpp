@@ -5,12 +5,14 @@
 
 Parametros P;
 
-enum Estado : uint8_t { DETENIDO, AVANZANDO, GIRANDO };
+enum Estado : uint8_t { DETENIDO, AVANZANDO, GIRANDO, LIBRE };
 Estado estado = DETENIDO;
 
 //Encoders
 volatile long cuentas[NUM_MOTORES] = { 0, 0, 0, 0 }; //Pulsos por encoder de motor
 int8_t signoEnc[NUM_MOTORES]; //Signos + - por motor
+
+uint32_t tInicioMov = 0;   // para el tiempo máximo de seguridad
 
 // Cada que canal A cambia de estado se ejecuta 
 static inline void flancoEncoder(uint8_t i) {
@@ -80,6 +82,11 @@ void frenarTodos() {
     digitalWrite(PIN_INB[i], HIGH);
     analogWrite(PIN_EN[i], 255);   // freno activo, corriente se opne a su mov
   }
+}
+
+// Rueda libre: sin freno, para poder girar las ruedas con la mano
+void soltarTodos() {
+  for (uint8_t i = 0; i < NUM_MOTORES; i++) motorAplicar(i, 0);
 }
 
 //MPU eje z -- REVISAR 
@@ -234,22 +241,24 @@ void pasoGirar(float dt) {
   lazoVelocidad(-dv, dv, dt);
 }
 
-//Comandos minimos por serial
 void iniciarAvance(float mm) {
   for (uint8_t i = 0; i < NUM_MOTORES; i++) pidVel[i].reiniciar();
   leerCuentas(cuentasInicio);
   distObjetivoMM = mm;
   vBase = 0;
   pidRumbo.reiniciar();
-  yawObjetivo = yaw;   // ir derecho respecto al rumbo actual
+  // yawObjetivo NO se toca: se mantiene el rumbo nominal que dejó el último
+  // giro, así el error de un giro se corrige al avanzar en vez de acumularse.
+  tInicioMov = millis();
   estado = AVANZANDO;
-  Serial.print(F("Avanzando ")); Serial.print(mm); Serial.println(F(" mm"));
+  Serial.print(F("Avanzando ")); Serial.print(mm / 10.0f, 1); Serial.println(F(" cm"));
 }
 
 void iniciarGiro(float grados) {
   for (uint8_t i = 0; i < NUM_MOTORES; i++) pidVel[i].reiniciar();
-  yawObjetivo = yaw + grados;
+  yawObjetivo += grados;   // relativo al rumbo NOMINAL, no al yaw medido
   pidGiro.reiniciar();
+  tInicioMov = millis();
   estado = GIRANDO;
   Serial.print(F("Girando ")); Serial.print(grados); Serial.println(F(" grados"));
 }
@@ -261,14 +270,76 @@ void detenerTodo() {
   Serial.println(F("Detenido."));
 }
 
+// ---- Pruebas en lazo abierto (sin PID). Robot LEVANTADO, ruedas al aire ----
+const char* const NOMBRE_MOTOR[NUM_MOTORES] = { "DI", "TI", "DD", "TD" };
+
+void imprimirCuentas() {
+  long c[NUM_MOTORES];
+  leerCuentas(c);
+  for (uint8_t i = 0; i < NUM_MOTORES; i++) {
+    Serial.print(NOMBRE_MOTOR[i]); Serial.print('='); Serial.print(c[i]); Serial.print(F("  "));
+  }
+  Serial.println();
+}
+
+// 'p': cada motor solo, PWM 120 por 0.8 s. Debe girar ADELANTE y contar POSITIVO.
+void pruebaSignos() {
+  soltarTodos();
+  for (uint8_t i = 0; i < NUM_MOTORES; i++) {
+    long a[NUM_MOTORES], b[NUM_MOTORES];
+    leerCuentas(a);
+    motorAplicar(i, 120);
+    delay(800);
+    motorAplicar(i, 0);
+    delay(400);
+    leerCuentas(b);
+    long d = b[i] - a[i];
+    Serial.print(NOMBRE_MOTOR[i]); Serial.print(F(": ")); Serial.print(d);
+    if (labs(d) < 20)  Serial.println(F("  SIN SENAL de encoder (o el motor no giro)"));
+    else if (d > 0)    Serial.println(F("  positivo -> OK si la rueda giro ADELANTE"));
+    else               Serial.println(F("  NEGATIVO -> si giro adelante: cambiar ENCODER_INVERTIDO"));
+  }
+  Serial.println(F("Si una rueda giro hacia ATRAS: cambiar MOTOR_INVERTIDO de ese motor."));
+}
+
+// 'v<pwm>': los 4 motores al mismo PWM fijo; imprime la velocidad real en mm/s.
+// Sirve para calcular ffGanancia y pwmArranque.
+void pruebaVelocidad(int pwm) {
+  pwm = constrain(pwm, 0, (int)P.maxPwm);
+  for (uint8_t i = 0; i < NUM_MOTORES; i++) motorAplicar(i, pwm);
+  delay(700);                                   // dejar que se estabilice
+  long a[NUM_MOTORES], b[NUM_MOTORES];
+  leerCuentas(a);
+  delay(1000);
+  leerCuentas(b);
+  soltarTodos();
+  Serial.print(F("PWM ")); Serial.print(pwm); Serial.print(F(" -> mm/s: "));
+  for (uint8_t i = 0; i < NUM_MOTORES; i++) {
+    Serial.print(NOMBRE_MOTOR[i]); Serial.print('=');
+    Serial.print((b[i] - a[i]) * MM_POR_TICK, 0); Serial.print(F("  "));
+  }
+  Serial.println();
+}
+
 void procesarComando(char* linea) {
   char cmd = linea[0];
   float valor = atof(linea + 1);
+  bool quieto = (estado == DETENIDO || estado == LIBRE);
   switch (cmd) {
-    case 'f': iniciarAvance(valor); break;
+    case 'f': iniciarAvance(valor * 10.0f); break;   // valor en CENTIMETROS
     case 'g': iniciarGiro(valor); break;
     case 's': detenerTodo(); break;
-    default:  Serial.println(F("Comandos: f<mm>  g<grados>  s"));
+    case 'l': soltarTodos(); estado = LIBRE;
+              Serial.println(F("Ruedas LIBRES (s para frenar)")); break;
+    case 'e': imprimirCuentas(); break;
+    case 'x': noInterrupts();
+              for (uint8_t i = 0; i < NUM_MOTORES; i++) cuentas[i] = 0;
+              interrupts();
+              leerCuentas(cuentasPrevias);
+              Serial.println(F("Encoders en 0")); break;
+    case 'p': if (quieto) pruebaSignos(); break;
+    case 'v': if (quieto) pruebaVelocidad((int)valor); break;
+    default:  Serial.println(F("Comandos: f<cm> g<grados> s | l libre, e encoders, x cero, p signos, v<pwm>"));
   }
 }
 
@@ -286,11 +357,15 @@ void leerSerial() {
 }
 
 void imprimirDebug() {
-  static uint32_t tUltimo = 0;
+   static uint32_t tUltimo = 0;
+  if (estado == DETENIDO) return;          // no llenar el monitor si está quieto
   if (millis() - tUltimo < 250) return;
   tUltimo = millis();
-  const char* nombre = (estado == DETENIDO) ? "DETENIDO" : (estado == AVANZANDO) ? "AVANZANDO" : "GIRANDO";
+  if (estado == LIBRE) { imprimirCuentas(); return; }
+  const char* nombre = (estado == AVANZANDO) ? "AVANZANDO" : "GIRANDO";
   Serial.print(F("estado=")); Serial.print(nombre);
+  Serial.print(F("  cm="));   Serial.print(recorridoMM() / 10.0f, 1);
+  Serial.print(F("  vObj="));  Serial.print(velObjetivo[M_DI], 0);
   Serial.print(F("  yaw="));  Serial.print(yaw, 1);
   Serial.print(F("  vDI="));  Serial.print(velMedida[M_DI], 0);
   Serial.print(F("  vTI="));  Serial.print(velMedida[M_TI], 0);
@@ -317,7 +392,8 @@ void setup() {
     Serial.println(F("   Avanzar en linea recta no va a corregir rumbo; girar no funcionara."));
   }
 
-  Serial.println(F("Listo. Comandos: f<mm>  g<grados>  s"));
+  Serial.println(F("Listo. Comandos: f<cm> g<grados> s | l libre, e encoders, x cero, p signos, v<pwm>"));
+  tControl = millis();
 }
 
 void loop() {
@@ -329,12 +405,20 @@ void loop() {
     actualizarIMU(dt);
     medirVelocidades(dt);
 
-    switch (estado) {
+        switch (estado) {
       case DETENIDO:  frenarTodos();   break;
+      case LIBRE:     soltarTodos();   break;
       case AVANZANDO: pasoAvanzar(dt); break;
       case GIRANDO:   pasoGirar(dt);   break;
     }
-  }
+
+    // Seguridad: si un movimiento tarda demasiado (signo de encoder mal,
+    // robot atorado), se detiene en lugar de seguir para siempre.
+    if ((estado == AVANZANDO || estado == GIRANDO) && millis() - tInicioMov > TIEMPO_MAX_MOV_MS) {
+      detenerTodo();
+      Serial.println(F("!! Tiempo maximo excedido. Revisar signos con 'p'."));
+    }
+}
 
   leerSerial();
   imprimirDebug();

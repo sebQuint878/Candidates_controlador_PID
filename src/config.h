@@ -15,14 +15,18 @@ const uint8_t PIN_ENC_B[NUM_MOTORES] = { 30, 31, 32, 33 }; //Cable Negro Señal 
 
 //Para no recablear, cambiar valor aqui de signo si algo gira mal
 const bool MOTOR_INVERTIDO[NUM_MOTORES]   = { false, false, true, true };
-const bool ENCODER_INVERTIDO[NUM_MOTORES] = { false, false, true, true };
+const bool ENCODER_INVERTIDO[NUM_MOTORES] = { true, true, false, false };
 
-// Gira una rueda 10 vueltas completas a mano, cuenta los pulsos reales
-// que reporta el encoder, y divide entre 10 para obtener este valor.
-constexpr float PULSOS_POR_VUELTA = 1.0f; 
+constexpr float DIAMETRO_RUEDA_MM = 68.0f;    // CALIBRADO
+constexpr float TICKS_POR_VUELTA  = 989.5f;   // CALBIRADO
 
-// Convierte pulso a mm reales que giraron
-constexpr float MM_POR_TICK = 1.0f;
+// Ajuste fino: pedir f100 (1 m), medir con cinta lo que avanzó en realidad y
+// poner FACTOR_DISTANCIA = real_cm / 100. Ej: avanzó 96 cm -> 0.96
+constexpr float FACTOR_DISTANCIA  = 2.55f;
+constexpr float MM_POR_TICK = PI * DIAMETRO_RUEDA_MM / TICKS_POR_VUELTA * FACTOR_DISTANCIA;
+
+// Seguridad: ningún movimiento puede durar más que esto
+constexpr uint32_t TIEMPO_MAX_MOV_MS = 8000;
 
 // MPU6050 - giroscopio
 constexpr uint8_t MPU_DIRECCION = 0x68;
@@ -32,12 +36,15 @@ constexpr float YAW_SIGNO = 1.0f;           // cambiar a -1.0f si el yaw crece a
 // Ajustar en vivo -> Ganancias PID
 struct Parametros {
   // Velocidad de cada motor (PI + feedforward)
-  float velKp = 1.5f; //Que tanto reacciona cada rueda frente al error
-  float velKi = 0.0f; //Que tanto tiempo esta diespuesta a esperar si falla mucho
+  float velKp = 0.4f; //Que tanto reacciona cada rueda frente al error
+  float velKi = 1.5f; //Que tanto tiempo esta diespuesta a esperar si falla mucho
   float velIntMax = 100.0f; //Limite de frustracion p rueda
   float velFiltro = 0.3f;  //
-  float pwmArranque[NUM_MOTORES] = { 40, 40, 40, 40 };          // Calibrar PWM minimo para que cada rueda empiece a girar
-  float ffGanancia[NUM_MOTORES]  = { 1.0f, 1.0f, 1.0f, 1.0f };  // Calibrar qué tan rápido sube el PWM mientras pido velocidad
+  float pwmArranque[NUM_MOTORES] = { 40, 40, 47, 45 };          // Calibrar PWM minimo para que cada rueda empiece a girar
+  float ffGanancia[NUM_MOTORES]  = { 0.9345f, 0.9259f, 0.9090f, 0.9259f };  // Calibrar qué tan rápido sube el PWM mientras pido velocidad
+
+  //DI=304  TI=308  DD=312  TD=318 
+  //DI=411  TI=416  DD=422  TD=426
 
   // Mantener rumbo recto
   //Esto es por lado
